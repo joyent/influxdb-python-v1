@@ -47,6 +47,8 @@ class InfluxDBClient(object):
     :type username: str
     :param password: password of the user, defaults to 'root'
     :type password: str
+    :param token: token for access.  Overrides username/password
+    :type token: str
     :param pool_size: urllib3 connection pool size, defaults to 10.
     :type pool_size: int
     :param database: database name to connect to, defaults to None
@@ -101,6 +103,7 @@ class InfluxDBClient(object):
                  port=8086,
                  username='root',
                  password='root',
+                 token=None,
                  database=None,
                  ssl=False,
                  verify_ssl=False,
@@ -125,6 +128,7 @@ class InfluxDBClient(object):
         self._database = database
         self._timeout = timeout
         self._retries = retries
+        self._token = token
 
         self._verify_ssl = verify_ssl
 
@@ -134,7 +138,7 @@ class InfluxDBClient(object):
         if not session:
             session = requests.Session()
 
-        self._session = session
+        self._session = self.setup_authenticaiton(session, self._token, self._username, self._password)
         adapter = _SocketOptionsAdapter(
             pool_connections=int(pool_size),
             pool_maxsize=int(pool_size),
@@ -258,6 +262,16 @@ class InfluxDBClient(object):
 
         return cls(**init_args)
 
+    def setup_authenticaiton(self, session, token=None, username=None, password=None):
+
+        if token:
+            session.headers.update({"Authorization": f"Token {token}"})
+            return session
+
+        session.auth = (username, password)
+
+        return session
+
     def switch_database(self, database):
         """Change the client's database.
 
@@ -266,16 +280,22 @@ class InfluxDBClient(object):
         """
         self._database = database
 
-    def switch_user(self, username, password):
-        """Change the client's username.
+    def switch_user(self, token=None, username=None, password=None):
+        """Change the client's user.
 
+        :param token: the token of the user to switch to
+        :type token: str
         :param username: the username to switch to
         :type username: str
         :param password: the password for the username
         :type password: str
         """
-        self._username = username
-        self._password = password
+        if token:
+            self._session.headers.update({"Authorization": f"Token {token}"})
+            self._session.auth = None
+
+        self._session.auth = (username, password)
+        self._session.headers.pop("Authorization", None)
 
     def request(self, url, method='GET', params=None, data=None, stream=False,
                 expected_response_code=200, headers=None):
@@ -336,14 +356,9 @@ class InfluxDBClient(object):
         _try = 0
         while retry:
             try:
-                if "Authorization" in headers:
-                    auth = (None, None)
-                else:
-                    auth = (self._username, self._password)
                 response = self._session.request(
                     method=method,
                     url=url,
-                    auth=auth if None not in auth else None,
                     params=params,
                     data=data,
                     stream=stream,
